@@ -10,6 +10,8 @@ extern crate chrono;
 #[macro_use]
 extern crate clap;
 #[macro_use]
+extern crate crossbeam_channel;
+#[macro_use]
 extern crate error_chain;
 extern crate futures;
 #[cfg(unix)]
@@ -54,6 +56,7 @@ mod rpc_uniqueness_check;
 mod settings;
 mod shutdown;
 mod system_service;
+mod tunnel_state_machine;
 mod version;
 
 use error_chain::ChainedError;

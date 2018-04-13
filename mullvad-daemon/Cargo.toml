@@ -6,6 +6,7 @@ description = "Mullvad VPN daemon. Runs and controls the VPN tunnels"
 license = "GPL-3.0"
 
 [dependencies]
+crossbeam-channel = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 clap = "2.25"
 error-chain = "0.12"
