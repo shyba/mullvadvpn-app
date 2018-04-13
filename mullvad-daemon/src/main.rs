@@ -6,6 +6,8 @@
 //! GNU General Public License as published by the Free Software Foundation, either version 3 of
 //! the License, or (at your option) any later version.
 
+#[macro_use]
+extern crate chan;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
@@ -54,6 +56,7 @@ mod rpc_uniqueness_check;
 mod settings;
 mod shutdown;
 mod system_service;
+mod tunnel_state_machine;
 mod version;
 
 use error_chain::ChainedError;
