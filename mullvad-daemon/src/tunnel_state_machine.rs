@@ -12,7 +12,8 @@ use futures::{Async, Future, Poll, Sink, Stream};
 use tokio_core::reactor::Core;
 
 use mullvad_types::account::AccountToken;
-use talpid_core::tunnel::{self, TunnelEvent, TunnelMonitor};
+use talpid_core::mpsc::IntoSender;
+use talpid_core::tunnel::{self, TunnelEvent, TunnelMetadata, TunnelMonitor};
 use talpid_types::net::{TunnelEndpoint, TunnelEndpointData, TunnelOptions};
 
 use super::{OPENVPN_LOG_FILENAME, WIREGUARD_LOG_FILENAME};
@@ -28,11 +29,16 @@ const TUNNEL_INTERFACE_ALIAS: Option<&str> = Some("Mullvad");
 const TUNNEL_INTERFACE_ALIAS: Option<&str> = None;
 
 /// Spawn the tunnel state machine thread, returning a channel for sending tunnel requests.
-pub fn spawn() -> mpsc::UnboundedSender<TunnelRequest> {
+pub fn spawn<T>(
+    state_change_listener: IntoSender<TunnelStateInfo, T>,
+) -> mpsc::UnboundedSender<TunnelRequest>
+where
+    T: From<TunnelStateInfo> + Send + 'static,
+{
     let (request_tx, request_rx) = mpsc::unbounded();
 
     thread::spawn(move || {
-        if let Err(error) = event_loop(request_rx) {
+        if let Err(error) = event_loop(request_rx, state_change_listener) {
             error!("{}", error.display_chain());
         }
     });
@@ -40,14 +46,24 @@ pub fn spawn() -> mpsc::UnboundedSender<TunnelRequest> {
     request_tx
 }
 
-fn event_loop(requests: mpsc::UnboundedReceiver<TunnelRequest>) -> Result<()> {
+fn event_loop<T>(
+    requests: mpsc::UnboundedReceiver<TunnelRequest>,
+    state_change_listener: IntoSender<TunnelStateInfo, T>,
+) -> Result<()>
+where
+    T: From<TunnelStateInfo> + Send + 'static,
+{
     let mut reactor =
         Core::new().chain_err(|| "Failed to initialize tunnel state machine event loop")?;
 
     let state_machine = TunnelStateMachine::new(requests);
 
     reactor
-        .run(state_machine)
+        .run(state_machine.for_each(|state_change_event| {
+            state_change_listener
+                .send(state_change_event)
+                .chain_err(|| "Failed to send state change event to listener")
+        }))
         .chain_err(|| "Tunnel state machine finished with an error")
 }
 
@@ -68,11 +84,22 @@ pub struct TunnelParameters {
     pub account_token: AccountToken,
 }
 
+/// Description of the tunnel states.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TunnelStateInfo {
+    NotConnected,
+    Connecting(TunnelEndpoint),
+    Connected(TunnelEndpoint, TunnelMetadata),
+    Exiting,
+    Restarting,
+}
+
 /// Asynchronous handling of the tunnel state machine.
 ///
-/// This type implements `Future`, and attempts to advance the state machine based on the events
+/// This type implements `Stream`, and attempts to advance the state machine based on the events
 /// received on the requests stream and possibly on events that specific states are also listening
-/// to.
+/// to. Every time it successfully advances the state machine a `TunnelStateInfo` is emitted by the
+/// stream.
 struct TunnelStateMachine {
     current_state: Option<TunnelState>,
     requests: mpsc::UnboundedReceiver<TunnelRequest>,
@@ -87,27 +114,40 @@ impl TunnelStateMachine {
     }
 }
 
-impl Future for TunnelStateMachine {
-    type Item = ();
+impl Stream for TunnelStateMachine {
+    type Item = TunnelStateInfo;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        use self::TunnelStateTransition::*;
+
         let mut state = self
             .current_state
             .take()
             .ok_or_else(|| Error::from("State machine lost track of its state!"))?;
-        let mut event_was_received = true;
+        let mut result = Ok(Async::Ready(None));
+        let mut event_was_ignored = true;
 
-        while event_was_received {
+        while event_was_ignored {
             let transition = state.handle_event(&mut self.requests);
 
-            event_was_received = transition.is_because_of_an_event();
+            event_was_ignored = match transition {
+                SameState(_) => true,
+                NewState(_) | NoEvents(_) => false,
+            };
+
+            result = match transition {
+                NewState(ref state) => Ok(Async::Ready(Some(state.info()))),
+                SameState(_) => result,
+                NoEvents(_) => Ok(Async::NotReady),
+            };
+
             state = transition.into_tunnel_state();
         }
 
         self.current_state = Some(state);
 
-        Ok(Async::NotReady)
+        result
     }
 }
 
@@ -122,16 +162,6 @@ enum TunnelStateTransition<T: TunnelStateProgress> {
 }
 
 impl<T: TunnelStateProgress> TunnelStateTransition<T> {
-    /// Checks if this transition happened after an event was received.
-    pub fn is_because_of_an_event(&self) -> bool {
-        use self::TunnelStateTransition::*;
-
-        match self {
-            NewState(_) | SameState(_) => true,
-            NoEvents(_) => false,
-        }
-    }
-
     /// Helper method to chain handling multiple different event types.
     ///
     /// The `handle_event` is only called if no events were handled so far.
@@ -214,6 +244,19 @@ enum TunnelState {
     Connected(ConnectedState),
     Exiting(ExitingState),
     Restarting(RestartingState),
+}
+
+impl TunnelState {
+    /// Returns information describing the state.
+    fn info(&self) -> TunnelStateInfo {
+        match *self {
+            TunnelState::NotConnected(_) => TunnelStateInfo::NotConnected,
+            TunnelState::Connecting(ref state) => state.info(),
+            TunnelState::Connected(ref state) => state.info(),
+            TunnelState::Exiting(_) => TunnelStateInfo::Exiting,
+            TunnelState::Restarting(_) => TunnelStateInfo::Restarting,
+        }
+    }
 }
 
 macro_rules! impl_from_for_tunnel_state {
@@ -319,6 +362,7 @@ impl TunnelStateProgress for NotConnectedState {
 struct ConnectingState {
     close_handle: CloseHandle,
     tunnel_events: mpsc::UnboundedReceiver<TunnelEvent>,
+    tunnel_endpoint: TunnelEndpoint,
 }
 
 impl ConnectingState {
@@ -335,6 +379,7 @@ impl ConnectingState {
 
     fn new(parameters: TunnelParameters) -> Result<Self> {
         let (event_tx, event_rx) = mpsc::unbounded();
+        let tunnel_endpoint = parameters.endpoint;
         let monitor = Self::spawn_tunnel_monitor(parameters, event_tx.wait())?;
         let close_handle = CloseHandle::new(&monitor);
 
@@ -343,6 +388,7 @@ impl ConnectingState {
         Ok(ConnectingState {
             close_handle,
             tunnel_events: event_rx,
+            tunnel_endpoint,
         })
     }
 
@@ -408,6 +454,10 @@ impl ConnectingState {
         });
     }
 
+    fn info(&self) -> TunnelStateInfo {
+        TunnelStateInfo::Connecting(self.tunnel_endpoint)
+    }
+
     fn handle_requests(
         self,
         requests: &mut mpsc::UnboundedReceiver<TunnelRequest>,
@@ -426,9 +476,12 @@ impl ConnectingState {
         use self::TunnelStateTransition::*;
 
         match try_handle_event!(self, self.tunnel_events.poll()) {
-            Ok(TunnelEvent::Up(_)) => {
-                NewState(ConnectedState::new(self.tunnel_events, self.close_handle))
-            }
+            Ok(TunnelEvent::Up(metadata)) => NewState(ConnectedState::new(
+                metadata,
+                self.tunnel_events,
+                self.close_handle,
+                self.tunnel_endpoint,
+            )),
             Ok(_) => SameState(self),
             Err(_) => NewState(ExitingState::wait_for(self.close_handle)),
         }
@@ -449,17 +502,27 @@ impl TunnelStateProgress for ConnectingState {
 struct ConnectedState {
     close_handle: CloseHandle,
     tunnel_events: mpsc::UnboundedReceiver<TunnelEvent>,
+    tunnel_endpoint: TunnelEndpoint,
+    metadata: TunnelMetadata,
 }
 
 impl ConnectedState {
     fn new(
+        metadata: TunnelMetadata,
         tunnel_events: mpsc::UnboundedReceiver<TunnelEvent>,
         close_handle: CloseHandle,
+        tunnel_endpoint: TunnelEndpoint,
     ) -> TunnelState {
         ConnectedState {
             close_handle,
             tunnel_events,
+            tunnel_endpoint,
+            metadata,
         }.into()
+    }
+
+    fn info(&self) -> TunnelStateInfo {
+        TunnelStateInfo::Connected(self.tunnel_endpoint, self.metadata.clone())
     }
 
     fn handle_requests(
