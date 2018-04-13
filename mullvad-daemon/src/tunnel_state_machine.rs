@@ -8,7 +8,7 @@ use std::time::Duration;
 use crossbeam_channel as channel;
 use error_chain::ChainedError;
 
-use talpid_core::tunnel::{self, TunnelEvent, TunnelMonitor};
+use talpid_core::tunnel::{self, TunnelEvent, TunnelMetadata, TunnelMonitor};
 use talpid_types::net::{TunnelEndpoint, TunnelEndpointData, TunnelOptions};
 
 use super::{OPENVPN_LOG_FILENAME, WIREGUARD_LOG_FILENAME};
@@ -19,18 +19,26 @@ error_chain!{}
 const MIN_TUNNEL_ALIVE_TIME_MS: Duration = Duration::from_millis(1000);
 
 /// Spawn the tunnel state machine thread, returning a channel for sending tunnel requests.
-pub fn spawn() -> channel::Sender<TunnelRequest> {
+pub fn spawn() -> (
+    channel::Sender<TunnelRequest>,
+    channel::Receiver<TunnelStateInfo>,
+) {
     let (request_tx, request_rx) = channel::unbounded();
+    let (info_tx, info_rx) = channel::unbounded();
 
-    thread::spawn(move || event_loop(request_rx));
+    thread::spawn(move || event_loop(request_rx, info_tx));
 
-    request_tx
+    (request_tx, info_rx)
 }
 
-fn event_loop(requests: channel::Receiver<TunnelRequest>) {
+fn event_loop(
+    requests: channel::Receiver<TunnelRequest>,
+    info_listener: channel::Sender<TunnelStateInfo>,
+) {
     let mut state = TunnelState::from(NotConnectedState);
 
     while let Some(new_state) = state.handle_events(&requests) {
+        info_listener.send(new_state.info());
         state = new_state;
     }
 }
@@ -50,6 +58,16 @@ pub struct TunnelParameters {
     pub log_dir: Option<PathBuf>,
     pub resource_dir: PathBuf,
     pub account_token: String,
+}
+
+/// Description of the tunnel states.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TunnelStateInfo {
+    NotConnected,
+    Connecting(TunnelEndpoint),
+    Connected(TunnelEndpoint, TunnelMetadata),
+    Exiting,
+    Restarting,
 }
 
 /// Valid states of the tunnel.
@@ -78,6 +96,17 @@ impl TunnelState {
             TunnelState::Connected(state) => state.handle_events(requests),
             TunnelState::Exiting(state) => state.handle_events(requests),
             TunnelState::Restarting(state) => state.handle_events(requests),
+        }
+    }
+
+    /// Returns information describing the state.
+    fn info(&self) -> TunnelStateInfo {
+        match *self {
+            TunnelState::NotConnected(_) => TunnelStateInfo::NotConnected,
+            TunnelState::Connecting(ref state) => state.info(),
+            TunnelState::Connected(ref state) => state.info(),
+            TunnelState::Exiting(_) => TunnelStateInfo::Exiting,
+            TunnelState::Restarting(_) => TunnelStateInfo::Restarting,
         }
     }
 }
@@ -152,6 +181,7 @@ impl NotConnectedState {
 struct ConnectingState {
     close_handle: CloseHandle,
     tunnel_events: channel::Receiver<TunnelEvent>,
+    tunnel_endpoint: TunnelEndpoint,
 }
 
 impl ConnectingState {
@@ -169,6 +199,7 @@ impl ConnectingState {
     fn new(parameters: TunnelParameters) -> Result<Self> {
         let (event_tx, event_rx) = channel::unbounded();
         let listening_for_events = Arc::new(AtomicBool::new(true));
+        let tunnel_endpoint = parameters.endpoint;
         let monitor =
             Self::spawn_tunnel_monitor(parameters, event_tx, listening_for_events.clone())?;
         let close_handle = CloseHandle::new(&monitor, listening_for_events);
@@ -178,6 +209,7 @@ impl ConnectingState {
         Ok(ConnectingState {
             close_handle,
             tunnel_events: event_rx,
+            tunnel_endpoint,
         })
     }
 
@@ -234,25 +266,32 @@ impl ConnectingState {
 
     fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
         let tunnel_events = self.tunnel_events.clone();
-        let close_handle = self.close_handle;
 
         loop {
             select! {
                 recv(requests, request) => {
                     if let TunnelRequest::CloseTunnel = request? {
-                        return Some(ExitingState::wait_for(close_handle));
+                        return Some(ExitingState::wait_for(self.close_handle));
+                    } else {
+                        return Some(TunnelState::from(self));
                     }
                 },
                 recv(tunnel_events, event) => {
-                    if let TunnelEvent::Up(_) = event? {
+                    if let TunnelEvent::Up(metadata) = event? {
                         return Some(ConnectedState::new(
+                            metadata,
                             self.tunnel_events,
-                            close_handle,
+                            self.close_handle,
+                            self.tunnel_endpoint,
                         ));
                     }
                 },
             }
         }
+    }
+
+    fn info(&self) -> TunnelStateInfo {
+        TunnelStateInfo::Connecting(self.tunnel_endpoint)
     }
 }
 
@@ -260,28 +299,35 @@ impl ConnectingState {
 struct ConnectedState {
     close_handle: CloseHandle,
     tunnel_events: channel::Receiver<TunnelEvent>,
+    tunnel_endpoint: TunnelEndpoint,
+    metadata: TunnelMetadata,
 }
 
 impl ConnectedState {
     fn new(
+        metadata: TunnelMetadata,
         tunnel_events: channel::Receiver<TunnelEvent>,
         close_handle: CloseHandle,
+        tunnel_endpoint: TunnelEndpoint,
     ) -> TunnelState {
         ConnectedState {
             close_handle,
             tunnel_events,
+            tunnel_endpoint,
+            metadata,
         }.into()
     }
 
     fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
-        let tunnel_events = self.tunnel_events;
-        let close_handle = self.close_handle;
+        let tunnel_events = self.tunnel_events.clone();
 
         loop {
             select! {
                 recv(requests, request) => {
                     if let TunnelRequest::CloseTunnel = request? {
                         break;
+                    } else {
+                        return Some(TunnelState::from(self));
                     }
                 },
                 recv(tunnel_events, event) => {
@@ -292,7 +338,11 @@ impl ConnectedState {
             }
         }
 
-        Some(ExitingState::wait_for(close_handle))
+        Some(ExitingState::wait_for(self.close_handle))
+    }
+
+    fn info(&self) -> TunnelStateInfo {
+        TunnelStateInfo::Connected(self.tunnel_endpoint, self.metadata.clone())
     }
 }
 
@@ -319,6 +369,8 @@ impl ExitingState {
                 recv(requests, request) => {
                     if let TunnelRequest::StartTunnel(parameters) = request? {
                         return Some(RestartingState::new(self.exited, parameters));
+                    } else {
+                        return Some(TunnelState::from(self));
                     }
                 },
                 recv(exited, _) => {
@@ -352,6 +404,8 @@ impl RestartingState {
                 recv(requests, request) => {
                     if let TunnelRequest::CloseTunnel = request? {
                         return Some(ExitingState::new(self.exited));
+                    } else {
+                        return Some(TunnelState::from(self));
                     }
                 },
                 recv(exited, _) => {
