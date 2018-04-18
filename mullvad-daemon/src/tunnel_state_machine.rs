@@ -45,13 +45,18 @@ fn event_loop(
 
 /// Representation of external requests for the tunnel state machine.
 pub enum TunnelRequest {
+    /// Request a state information event to be sent.
+    PollStateInfo,
     /// Request a tunnel to be opened.
-    StartTunnel(TunnelParameters),
+    Start(TunnelParameters),
+    /// Requst the tunnel to restart if it has been previously requested to be opened.
+    Restart(TunnelParameters),
     /// Request a tunnel to be closed.
-    CloseTunnel,
+    Close,
 }
 
 /// Information necessary to open a tunnel.
+#[derive(Debug, PartialEq)]
 pub struct TunnelParameters {
     pub endpoint: TunnelEndpoint,
     pub options: TunnelOptions,
@@ -168,9 +173,12 @@ struct NotConnectedState;
 impl NotConnectedState {
     fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
         for request in requests {
-            if let TunnelRequest::StartTunnel(parameters) = request {
-                return Some(ConnectingState::start(parameters));
-            }
+            return Some(match request {
+                TunnelRequest::Start(parameters) => ConnectingState::start(parameters),
+                TunnelRequest::Restart(_) => continue,
+                TunnelRequest::Close => continue,
+                TunnelRequest::PollStateInfo => TunnelState::from(self),
+            });
         }
 
         None
@@ -182,6 +190,7 @@ struct ConnectingState {
     close_handle: CloseHandle,
     tunnel_events: channel::Receiver<TunnelEvent>,
     tunnel_endpoint: TunnelEndpoint,
+    tunnel_parameters: TunnelParameters,
 }
 
 impl ConnectingState {
@@ -201,7 +210,7 @@ impl ConnectingState {
         let listening_for_events = Arc::new(AtomicBool::new(true));
         let tunnel_endpoint = parameters.endpoint;
         let monitor =
-            Self::spawn_tunnel_monitor(parameters, event_tx, listening_for_events.clone())?;
+            Self::spawn_tunnel_monitor(&parameters, event_tx, listening_for_events.clone())?;
         let close_handle = CloseHandle::new(&monitor, listening_for_events);
 
         Self::spawn_tunnel_monitor_wait_thread(monitor);
@@ -210,11 +219,12 @@ impl ConnectingState {
             close_handle,
             tunnel_events: event_rx,
             tunnel_endpoint,
+            tunnel_parameters: parameters,
         })
     }
 
     fn spawn_tunnel_monitor(
-        parameters: TunnelParameters,
+        parameters: &TunnelParameters,
         events: channel::Sender<TunnelEvent>,
         enable_events: Arc<AtomicBool>,
     ) -> Result<TunnelMonitor> {
@@ -270,11 +280,22 @@ impl ConnectingState {
         loop {
             select! {
                 recv(requests, request) => {
-                    if let TunnelRequest::CloseTunnel = request? {
-                        return Some(ExitingState::wait_for(self.close_handle));
-                    } else {
-                        return Some(TunnelState::from(self));
-                    }
+                    let request = request.unwrap_or(TunnelRequest::Close);
+
+                    return Some(match request {
+                        TunnelRequest::Start(parameters) => {
+                            if parameters != self.tunnel_parameters {
+                                RestartingState::wait_for(self.close_handle, parameters)
+                            } else {
+                                continue;
+                            }
+                        }
+                        TunnelRequest::Restart(parameters) => {
+                            RestartingState::wait_for(self.close_handle, parameters)
+                        }
+                        TunnelRequest::Close => ExitingState::wait_for(self.close_handle),
+                        TunnelRequest::PollStateInfo => TunnelState::from(self),
+                    });
                 },
                 recv(tunnel_events, event) => {
                     if let TunnelEvent::Up(metadata) = event? {
@@ -283,6 +304,7 @@ impl ConnectingState {
                             self.tunnel_events,
                             self.close_handle,
                             self.tunnel_endpoint,
+                            self.tunnel_parameters,
                         ));
                     }
                 },
@@ -301,6 +323,7 @@ struct ConnectedState {
     tunnel_events: channel::Receiver<TunnelEvent>,
     tunnel_endpoint: TunnelEndpoint,
     metadata: TunnelMetadata,
+    tunnel_parameters: TunnelParameters,
 }
 
 impl ConnectedState {
@@ -309,12 +332,14 @@ impl ConnectedState {
         tunnel_events: channel::Receiver<TunnelEvent>,
         close_handle: CloseHandle,
         tunnel_endpoint: TunnelEndpoint,
+        tunnel_parameters: TunnelParameters,
     ) -> TunnelState {
         ConnectedState {
             close_handle,
             tunnel_events,
             tunnel_endpoint,
             metadata,
+            tunnel_parameters,
         }.into()
     }
 
@@ -324,21 +349,32 @@ impl ConnectedState {
         loop {
             select! {
                 recv(requests, request) => {
-                    if let TunnelRequest::CloseTunnel = request? {
-                        break;
-                    } else {
-                        return Some(TunnelState::from(self));
-                    }
+                    let request = request.unwrap_or(TunnelRequest::Close);
+
+                    return Some(match request {
+                        TunnelRequest::Start(parameters) => {
+                            if parameters != self.tunnel_parameters {
+                                RestartingState::wait_for(self.close_handle, parameters)
+                            } else {
+                                continue;
+                            }
+                        }
+                        TunnelRequest::Restart(parameters) => {
+                            RestartingState::wait_for(self.close_handle, parameters)
+                        }
+                        TunnelRequest::Close => ExitingState::wait_for(self.close_handle),
+                        TunnelRequest::PollStateInfo => TunnelState::from(self),
+                    });
                 },
                 recv(tunnel_events, event) => {
                     if let TunnelEvent::Down = event? {
-                        break;
+                        return Some(
+                            RestartingState::wait_for(self.close_handle, self.tunnel_parameters),
+                        );
                     }
                 },
             }
         }
-
-        Some(ExitingState::wait_for(self.close_handle))
     }
 
     fn info(&self) -> TunnelStateInfo {
@@ -367,11 +403,16 @@ impl ExitingState {
         loop {
             select! {
                 recv(requests, request) => {
-                    if let TunnelRequest::StartTunnel(parameters) = request? {
-                        return Some(RestartingState::new(self.exited, parameters));
-                    } else {
-                        return Some(TunnelState::from(self));
-                    }
+                    let request = request.unwrap_or(TunnelRequest::Close);
+
+                    return Some(match request {
+                        TunnelRequest::Start(parameters) => {
+                            RestartingState::new(self.exited, parameters)
+                        }
+                        TunnelRequest::Restart(_) => continue,
+                        TunnelRequest::Close => continue,
+                        TunnelRequest::PollStateInfo => TunnelState::from(self),
+                    });
                 },
                 recv(exited, _) => {
                     return Some(NotConnectedState.into());
@@ -396,17 +437,26 @@ impl RestartingState {
         Self::new(close_handle.close(), parameters)
     }
 
-    fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
+    fn handle_events(mut self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
         let exited = self.exited.clone();
 
         loop {
             select! {
                 recv(requests, request) => {
-                    if let TunnelRequest::CloseTunnel = request? {
-                        return Some(ExitingState::new(self.exited));
-                    } else {
-                        return Some(TunnelState::from(self));
-                    }
+                    let request = request.unwrap_or(TunnelRequest::Close);
+
+                    return Some(match request {
+                        TunnelRequest::Start(parameters) => {
+                            self.parameters = parameters;
+                            continue;
+                        }
+                        TunnelRequest::Restart(parameters) => {
+                            self.parameters = parameters;
+                            continue;
+                        }
+                        TunnelRequest::Close => ExitingState::new(self.exited),
+                        TunnelRequest::PollStateInfo => TunnelState::from(self),
+                    });
                 },
                 recv(exited, _) => {
                     return Some(ConnectingState::start(self.parameters));
