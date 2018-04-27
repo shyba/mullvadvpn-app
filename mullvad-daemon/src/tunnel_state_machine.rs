@@ -1,4 +1,3 @@
-use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -140,30 +139,38 @@ impl_from_for_tunnel_state! {
 struct CloseHandle {
     listening_for_tunnel_events: Arc<AtomicBool>,
     tunnel_close_handle: tunnel::CloseHandle,
+    tunnel_close_event: channel::Receiver<Result<()>>,
 }
 
 impl CloseHandle {
-    fn new(tunnel_monitor: &TunnelMonitor, listening_for_tunnel_events: Arc<AtomicBool>) -> Self {
+    fn new(
+        tunnel_close_handle: tunnel::CloseHandle,
+        tunnel_close_event: channel::Receiver<Result<()>>,
+        listening_for_tunnel_events: Arc<AtomicBool>,
+    ) -> Self {
         CloseHandle {
             listening_for_tunnel_events,
-            tunnel_close_handle: tunnel_monitor.close_handle(),
+            tunnel_close_handle,
+            tunnel_close_event,
         }
     }
 
-    fn close(self) -> channel::Receiver<io::Result<()>> {
-        let (close_tx, close_rx) = channel::unbounded();
-
+    fn close(self) -> channel::Receiver<Result<()>> {
         // Prevent event dispatcher thread from locking by telling it to not send events to the
         // closed channel.
         self.listening_for_tunnel_events
             .store(false, Ordering::Release);
 
-        thread::spawn(move || {
-            close_tx.send(self.tunnel_close_handle.close());
-            trace!("Tunnel kill thread exit");
-        });
+        let close_result = self
+            .tunnel_close_handle
+            .close()
+            .chain_err(|| "Failed to request tunnel monitor to close the tunnel");
 
-        close_rx
+        if let Err(error) = close_result {
+            error!("{}", error.display_chain());
+        }
+
+        self.tunnel_close_event
     }
 }
 
@@ -187,10 +194,11 @@ impl NotConnectedState {
 
 /// The tunnel has been started, but it is not established/functional.
 struct ConnectingState {
-    close_handle: CloseHandle,
     tunnel_events: channel::Receiver<TunnelEvent>,
     tunnel_endpoint: TunnelEndpoint,
     tunnel_parameters: TunnelParameters,
+    tunnel_close_event: channel::Receiver<Result<()>>,
+    close_handle: CloseHandle,
 }
 
 impl ConnectingState {
@@ -205,21 +213,38 @@ impl ConnectingState {
         }
     }
 
+    fn restart(exit_result: Option<Result<()>>, parameters: TunnelParameters) -> TunnelState {
+        match exit_result {
+            Some(Err(error)) => {
+                let chained_error = error.chain_err(|| "Tunnel closed unexpectedly, restarting.");
+                info!("{}", chained_error.display_chain());
+            }
+            _ => info!("Tunnel closed. Restarting."),
+        }
+
+        Self::start(parameters)
+    }
+
     fn new(parameters: TunnelParameters) -> Result<Self> {
         let (event_tx, event_rx) = channel::unbounded();
         let listening_for_events = Arc::new(AtomicBool::new(true));
         let tunnel_endpoint = parameters.endpoint;
         let monitor =
             Self::spawn_tunnel_monitor(&parameters, event_tx, listening_for_events.clone())?;
-        let close_handle = CloseHandle::new(&monitor, listening_for_events);
-
-        Self::spawn_tunnel_monitor_wait_thread(monitor);
+        let tunnel_close_handle = monitor.close_handle();
+        let tunnel_close_event = Self::spawn_tunnel_monitor_wait_thread(monitor);
+        let close_handle = CloseHandle::new(
+            tunnel_close_handle,
+            tunnel_close_event.clone(),
+            listening_for_events,
+        );
 
         Ok(ConnectingState {
-            close_handle,
             tunnel_events: event_rx,
             tunnel_endpoint,
             tunnel_parameters: parameters,
+            tunnel_close_event,
+            close_handle,
         })
     }
 
@@ -264,18 +289,26 @@ impl ConnectingState {
         }
     }
 
-    fn spawn_tunnel_monitor_wait_thread(tunnel_monitor: TunnelMonitor) {
+    fn spawn_tunnel_monitor_wait_thread(
+        tunnel_monitor: TunnelMonitor,
+    ) -> channel::Receiver<Result<()>> {
+        let (tunnel_close_event_tx, tunnel_close_event_rx) = channel::unbounded();
+
         thread::spawn(move || {
-            let result = tunnel_monitor.wait_at_least(MIN_TUNNEL_ALIVE_TIME_MS);
-            if let Err(error) = result.chain_err(|| "Tunnel exited in an unexpected way") {
-                error!("{}", error.display_chain());
-            }
+            let result = tunnel_monitor
+                .wait_at_least(MIN_TUNNEL_ALIVE_TIME_MS)
+                .chain_err(|| "Tunnel has stopped unexpectedly");
+
+            tunnel_close_event_tx.send(result);
             trace!("Tunnel monitor thread exit");
         });
+
+        tunnel_close_event_rx
     }
 
     fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
         let tunnel_events = self.tunnel_events.clone();
+        let tunnel_close_event = self.tunnel_close_event.clone();
 
         loop {
             select! {
@@ -302,11 +335,15 @@ impl ConnectingState {
                         return Some(ConnectedState::new(
                             metadata,
                             self.tunnel_events,
-                            self.close_handle,
                             self.tunnel_endpoint,
                             self.tunnel_parameters,
+                            self.tunnel_close_event,
+                            self.close_handle,
                         ));
                     }
+                },
+                recv(tunnel_close_event, result) => {
+                    return Some(ConnectingState::restart(result, self.tunnel_parameters));
                 },
             }
         }
@@ -319,32 +356,36 @@ impl ConnectingState {
 
 /// The tunnel is up and working.
 struct ConnectedState {
-    close_handle: CloseHandle,
     tunnel_events: channel::Receiver<TunnelEvent>,
     tunnel_endpoint: TunnelEndpoint,
     metadata: TunnelMetadata,
     tunnel_parameters: TunnelParameters,
+    tunnel_close_event: channel::Receiver<Result<()>>,
+    close_handle: CloseHandle,
 }
 
 impl ConnectedState {
     fn new(
         metadata: TunnelMetadata,
         tunnel_events: channel::Receiver<TunnelEvent>,
-        close_handle: CloseHandle,
         tunnel_endpoint: TunnelEndpoint,
         tunnel_parameters: TunnelParameters,
+        tunnel_close_event: channel::Receiver<Result<()>>,
+        close_handle: CloseHandle,
     ) -> TunnelState {
         ConnectedState {
-            close_handle,
             tunnel_events,
             tunnel_endpoint,
             metadata,
             tunnel_parameters,
+            tunnel_close_event,
+            close_handle,
         }.into()
     }
 
     fn handle_events(self, requests: &channel::Receiver<TunnelRequest>) -> Option<TunnelState> {
         let tunnel_events = self.tunnel_events.clone();
+        let tunnel_close_event = self.tunnel_close_event.clone();
 
         loop {
             select! {
@@ -373,6 +414,9 @@ impl ConnectedState {
                         );
                     }
                 },
+                recv(tunnel_close_event, result) => {
+                    return Some(ConnectingState::restart(result, self.tunnel_parameters));
+                },
             }
         }
     }
@@ -385,11 +429,11 @@ impl ConnectedState {
 /// This state is active from when we manually trigger a tunnel kill until the tunnel wait
 /// operation (TunnelExit) returned.
 struct ExitingState {
-    exited: channel::Receiver<io::Result<()>>,
+    exited: channel::Receiver<Result<()>>,
 }
 
 impl ExitingState {
-    fn new(exited: channel::Receiver<io::Result<()>>) -> TunnelState {
+    fn new(exited: channel::Receiver<Result<()>>) -> TunnelState {
         ExitingState { exited }.into()
     }
 
@@ -414,7 +458,11 @@ impl ExitingState {
                         TunnelRequest::PollStateInfo => TunnelState::from(self),
                     });
                 },
-                recv(exited, _) => {
+                recv(exited, result) => {
+                    if let Some(Err(error)) = result {
+                        let chained_error = error.chain_err(|| "Tunnel closed with an error");
+                        info!("{}", chained_error);
+                    }
                     return Some(NotConnectedState.into());
                 },
             }
@@ -424,12 +472,12 @@ impl ExitingState {
 
 /// This state is active when the tunnel is being closed but will be reopened shortly afterwards.
 struct RestartingState {
-    exited: channel::Receiver<io::Result<()>>,
+    exited: channel::Receiver<Result<()>>,
     parameters: TunnelParameters,
 }
 
 impl RestartingState {
-    fn new(exited: channel::Receiver<io::Result<()>>, parameters: TunnelParameters) -> TunnelState {
+    fn new(exited: channel::Receiver<Result<()>>, parameters: TunnelParameters) -> TunnelState {
         RestartingState { exited, parameters }.into()
     }
 
@@ -458,8 +506,8 @@ impl RestartingState {
                         TunnelRequest::PollStateInfo => TunnelState::from(self),
                     });
                 },
-                recv(exited, _) => {
-                    return Some(ConnectingState::start(self.parameters));
+                recv(exited, result) => {
+                    return Some(ConnectingState::restart(result, self.parameters));
                 },
             }
         }
