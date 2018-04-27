@@ -175,6 +175,23 @@ impl CloseHandle {
 struct NotConnectedState;
 
 impl NotConnectedState {
+    fn tunnel_closing(tunnel_close_event: chan::Receiver<Result<()>>) -> TunnelState {
+        Self::tunnel_closed(tunnel_close_event.recv())
+    }
+
+    fn tunnel_closed(tunnel_close_result: Option<Result<()>>) -> TunnelState {
+        match tunnel_close_result {
+            Some(Err(error)) => {
+                let chained_error = error.chain_err(|| "Tunnel closed with an error");
+                warn!("{}", chained_error);
+            }
+            None => warn!("Tunnel monitor thread has died"),
+            _ => debug!("Tunnel has closed"),
+        }
+
+        NotConnectedState.into()
+    }
+
     fn handle_events(self, requests: &chan::Receiver<TunnelRequest>) -> Option<TunnelState> {
         for request in requests {
             return Some(match request {
@@ -328,16 +345,22 @@ impl ConnectingState {
                     });
                 },
                 tunnel_events.recv() -> event => {
-                    if let TunnelEvent::Up(metadata) = event? {
-                        return Some(ConnectedState::new(
-                            metadata,
-                            self.tunnel_events,
-                            self.tunnel_endpoint,
-                            self.tunnel_parameters,
-                            self.tunnel_close_event,
-                            self.close_handle,
-                        ));
-                    }
+                    return Some(match event {
+                        Some(TunnelEvent::Up(metadata)) => {
+                            ConnectedState::new(
+                                metadata,
+                                self.tunnel_events,
+                                self.tunnel_endpoint,
+                                self.tunnel_parameters,
+                                self.tunnel_close_event,
+                                self.close_handle,
+                            )
+                        }
+                        None => {
+                            RestartingState::wait_for(self.close_handle, self.tunnel_parameters)
+                        }
+                        _ => continue,
+                    });
                 },
                 tunnel_close_event.recv() -> result => {
                     return Some(ConnectingState::restart(result, self.tunnel_parameters));
@@ -405,11 +428,12 @@ impl ConnectedState {
                     });
                 },
                 tunnel_events.recv() -> event => {
-                    if let TunnelEvent::Down = event? {
-                        return Some(
-                            RestartingState::wait_for(self.close_handle, self.tunnel_parameters),
-                        );
-                    }
+                    return Some(match event {
+                        Some(TunnelEvent::Down) | None => {
+                            RestartingState::wait_for(self.close_handle, self.tunnel_parameters)
+                        }
+                        _ => continue,
+                    });
                 },
                 tunnel_close_event.recv() -> result => {
                     return Some(ConnectingState::restart(result, self.tunnel_parameters));
@@ -444,23 +468,18 @@ impl ExitingState {
         loop {
             chan_select! {
                 requests.recv() -> request => {
-                    let request = request.unwrap_or(TunnelRequest::Close);
-
                     return Some(match request {
-                        TunnelRequest::Start(parameters) => {
+                        Some(TunnelRequest::Start(parameters)) => {
                             RestartingState::new(self.exited, parameters)
                         }
-                        TunnelRequest::Restart(_) => continue,
-                        TunnelRequest::Close => continue,
-                        TunnelRequest::PollStateInfo => TunnelState::from(self),
+                        Some(TunnelRequest::Restart(_)) => continue,
+                        Some(TunnelRequest::Close) => continue,
+                        Some(TunnelRequest::PollStateInfo) => TunnelState::from(self),
+                        None => NotConnectedState::tunnel_closing(self.exited),
                     });
                 },
                 exited.recv() -> result => {
-                    if let Some(Err(error)) = result {
-                        let chained_error = error.chain_err(|| "Tunnel closed with an error");
-                        info!("{}", chained_error);
-                    }
-                    return Some(NotConnectedState.into());
+                    return Some(NotConnectedState::tunnel_closed(result))
                 },
             }
         }
