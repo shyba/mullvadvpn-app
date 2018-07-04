@@ -6,8 +6,6 @@
 //! GNU General Public License as published by the Free Software Foundation, either version 3 of
 //! the License, or (at your option) any later version.
 
-#[macro_use]
-extern crate chan;
 extern crate chrono;
 #[macro_use]
 extern crate clap;
@@ -60,7 +58,8 @@ mod tunnel_state_machine;
 mod version;
 
 use error_chain::ChainedError;
-use futures::Future;
+use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::{Future, Sink, Stream};
 use jsonrpc_core::futures::sync::oneshot::Sender as OneshotSender;
 
 use management_interface::{BoxFuture, ManagementInterfaceServer, TunnelCommand};
@@ -123,6 +122,8 @@ static RELAY_CACHE_UPDATE_TIMEOUT: Duration = Duration::from_millis(3000);
 
 const DAEMON_LOG_FILENAME: &str = "daemon.log";
 
+type SyncUnboundedSender<T> = ::futures::sink::Wait<UnboundedSender<T>>;
+
 
 /// All events that can happen in the daemon. Sent from various threads and exposed interfaces.
 pub enum DaemonEvent {
@@ -150,7 +151,7 @@ impl From<TunnelCommand> for DaemonEvent {
 
 
 struct Daemon {
-    tunnel_requests: chan::Sender<TunnelRequest>,
+    tunnel_requests: SyncUnboundedSender<TunnelRequest>,
     security_state: SecurityState,
     last_broadcasted_state: DaemonState,
     target_state: TargetState,
@@ -207,7 +208,7 @@ impl Daemon {
             Self::start_management_interface(tx.clone(), cache_dir.clone())?;
 
         Ok(Daemon {
-            tunnel_requests,
+            tunnel_requests: Sink::wait(tunnel_requests),
             security_state: SecurityState::Unsecured,
             target_state,
             last_broadcasted_state: DaemonState {
@@ -249,14 +250,18 @@ impl Daemon {
     }
 
     fn forward_tunnel_state_changes(
-        state_events: chan::Receiver<TunnelStateInfo>,
+        state_events: UnboundedReceiver<TunnelStateInfo>,
         daemon_events: mpsc::Sender<DaemonEvent>,
     ) {
         thread::spawn(move || {
-            for state_event in state_events {
-                let daemon_event = DaemonEvent::TunnelStateChange(state_event);
-                if daemon_events.send(daemon_event).is_err() {
-                    break;
+            for state_event_result in Stream::wait(state_events) {
+                if let Ok(state_event) = state_event_result {
+                    let daemon_event = DaemonEvent::TunnelStateChange(state_event);
+                    if daemon_events.send(daemon_event).is_err() {
+                        break;
+                    }
+                } else {
+                    error!("Tunnel state machine has stopped!");
                 }
             }
             trace!("tunnel state listener stopped");
@@ -632,7 +637,9 @@ impl Daemon {
     fn start_tunnel(&mut self) -> Result<()> {
         let parameters = self.build_tunnel_parameters()?;
 
-        self.tunnel_requests.send(TunnelRequest::Start(parameters));
+        self.tunnel_requests
+            .send(TunnelRequest::Start(parameters))
+            .expect("Tunnel state machine has stopped");
 
         Ok(())
     }
@@ -641,17 +648,22 @@ impl Daemon {
         let parameters = self.build_tunnel_parameters()?;
 
         self.tunnel_requests
-            .send(TunnelRequest::Restart(parameters));
+            .send(TunnelRequest::Restart(parameters))
+            .expect("Tunnel state machine has stopped");
 
         Ok(())
     }
 
     fn poll_tunnel(&mut self) {
-        self.tunnel_requests.send(TunnelRequest::PollStateInfo)
+        self.tunnel_requests
+            .send(TunnelRequest::PollStateInfo)
+            .expect("Tunnel state machine has stopped");
     }
 
     fn kill_tunnel(&mut self) {
-        self.tunnel_requests.send(TunnelRequest::Close)
+        self.tunnel_requests
+            .send(TunnelRequest::Close)
+            .expect("Tunnel state machine has stopped");
     }
 
     fn build_tunnel_parameters(&mut self) -> Result<TunnelParameters> {
