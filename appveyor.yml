@@ -37,9 +37,8 @@ install:
       } ElseIf ($Env:TARGET -eq 'i686-pc-windows-gnu') {
         $Env:PATH += ';C:\msys64\mingw32\bin'
       }
-
-      $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows";
-      $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
+  - ps: $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows"
+  - ps: $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
 
   - curl -sSf -o rustup-init.exe https://win.rustup.rs/
   - rustup-init.exe -y --default-host %TARGET% --default-toolchain %RUST_VERSION%
