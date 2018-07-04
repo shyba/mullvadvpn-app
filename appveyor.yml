@@ -15,8 +15,8 @@ environment:
     RUST_BACKTRACE: "1"
     CPP_BUILD_MODES: "Debug"
     OPENSSL_STATIC: "1"
-    OPENSSL_LIB_DIR: "%APPVEYOR_BUILD_FOLDER%\dist-assets\\binaries\windows"
-    OPENSSL_INCLUDE_DIR: "%APPVEYOR_BUILD_FOLDER%\dist-assets\\binaries\windows\include"
+    OPENSSL_LIB_DIR: "%APPVEYOR_BUILD_FOLDER%\dist-assets\binaries\windows"
+    OPENSSL_INCLUDE_DIR: "%APPVEYOR_BUILD_FOLDER%\dist-assets\binaries\windows\include"
 
   # These are all the build jobs. Adjust as necessary. Comment out what you
   # don't need
