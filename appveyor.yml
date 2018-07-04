@@ -53,9 +53,8 @@ install:
 # This is the "test phase", tweak it as you see fit
 test_script:
   - bash -x build_windows_modules.sh
-  - ps: >-
-      cargo build
-      cargo test
+  - cargo build
+  - cargo test
 
 # Stops feature branches from triggering two builds (One for branch and one for PR)
 skip_branch_with_pr: true
