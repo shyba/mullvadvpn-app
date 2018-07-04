@@ -63,6 +63,8 @@ Line wrap the file at 100 chars.                                              Th
 - Make the log, cache, settings and RPC address directories configurable via the following
   environment variables: `MULLVAD_LOG_DIR`, `MULLVAD_CACHE_DIR`, `MULLVAD_SETTINGS_DIR` and
   `MULLVAD_RPC_ADDRESS_PATH`.
+- App now uses statically linked OpenSSL on all platforms.
+- App now ships it's own CA, limiting the amount of servers it can connect to.
 
 #### macOS
 - The installer changed from dmg to pkg format.
