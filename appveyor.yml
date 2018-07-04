@@ -31,7 +31,7 @@ environment:
       RUST_VERSION: nightly
 
 install:
-  - ps: >-
+  - ps: >
     $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows"
     $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
 
