@@ -31,16 +31,15 @@ environment:
       RUST_VERSION: nightly
 
 install:
-  - ps: >
-    $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows"
-    $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
-
   - ps: >-
       If ($Env:TARGET -eq 'x86_64-pc-windows-gnu') {
         $Env:PATH += ';C:\msys64\mingw64\bin'
       } ElseIf ($Env:TARGET -eq 'i686-pc-windows-gnu') {
         $Env:PATH += ';C:\msys64\mingw32\bin'
       }
+      $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows"
+      $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
+
   - curl -sSf -o rustup-init.exe https://win.rustup.rs/
   - rustup-init.exe -y --default-host %TARGET% --default-toolchain %RUST_VERSION%
   - set PATH=%PATH%;C:\Users\appveyor\.cargo\bin
