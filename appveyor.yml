@@ -38,7 +38,7 @@ install:
         $Env:PATH += ';C:\msys64\mingw32\bin'
       }
 
-      $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows"
+      $Env:OPENSSL_LIB_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows";
       $Env:OPENSSL_INCLUDE_DIR = $Env:APPVEYOR_BUILD_FOLDER + "\dist-assets\binaries\windows\include"
 
   - curl -sSf -o rustup-init.exe https://win.rustup.rs/
