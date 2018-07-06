@@ -34,12 +34,13 @@ matrix:
       rust: stable
       os: osx
       cache: cargo
-      env:
-      - OPENSSL_LIB_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/macos"
-      - OPENSSL_INCLUDE_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/macos/include"
+      #      env:
+      #      - OPENSSL_LIB_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/macos"
+      #      - OPENSSL_INCLUDE_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/macos/include"
       before_script:
         - env
       script: &rust_script
+        - source env.sh
         - cargo build --verbose
         - cargo test --verbose
 
@@ -55,12 +56,13 @@ matrix:
          packages:
           - binutils
       cache: cargo
-      env: &rust_linux_env
-      - OPENSSL_LIB_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/linux"
-      - OPENSSL_INCLUDE_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/linux/include"
+      #      env: &rust_linux_env
+      #      - OPENSSL_LIB_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/linux"
+      #      - OPENSSL_INCLUDE_DIR="$TRAVIS_BUILD_DIR/dist-assets/binaries/linux/include"
       before_script: &rust_before_script
         - env
       script:
+        - source env.sh
         - cargo build --verbose
         - cargo test --verbose
         # Install and run rustfmt on nightly only until rustfmt.toml settings are stabilized.
@@ -73,7 +75,7 @@ matrix:
       os: linux
       addons: *rust_linux_addons
       cache: cargo
-      env: *rust_linux_env
+      #env: *rust_linux_env
       before_script: *rust_before_script
       script: *rust_script
 
@@ -82,7 +84,7 @@ matrix:
       os: linux
       addons: *rust_linux_addons
       cache: cargo
-      env: *rust_linux_env
+      #env: *rust_linux_env
       before_script: *rust_before_script
       script: *rust_script
 
