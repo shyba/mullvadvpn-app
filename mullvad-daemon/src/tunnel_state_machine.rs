@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{mpsc as sync_mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,16 @@ use talpid_types::net::{TunnelEndpoint, TunnelEndpointData, TunnelOptions};
 use super::{OPENVPN_LOG_FILENAME, WIREGUARD_LOG_FILENAME};
 use logging;
 
-error_chain!{}
+error_chain! {
+    errors {
+        ReactorError {
+            description("Failed to initialize tunnel state machine event loop executor")
+        }
+        UnknownStartUpError {
+            description("Tunnel state machine thread failed to start for an unknown reason")
+        }
+    }
+}
 
 const MIN_TUNNEL_ALIVE_TIME: Duration = Duration::from_millis(1000);
 
@@ -31,40 +40,71 @@ const TUNNEL_INTERFACE_ALIAS: Option<&str> = None;
 /// Spawn the tunnel state machine thread, returning a channel for sending tunnel requests.
 pub fn spawn<T>(
     state_change_listener: IntoSender<TunnelStateInfo, T>,
-) -> mpsc::UnboundedSender<TunnelRequest>
+) -> Result<mpsc::UnboundedSender<TunnelRequest>>
 where
     T: From<TunnelStateInfo> + Send + 'static,
 {
     let (request_tx, request_rx) = mpsc::unbounded();
+    let (startup_tx, startup_rx) = sync_mpsc::channel();
 
-    thread::spawn(move || {
-        if let Err(error) = event_loop(request_rx, state_change_listener) {
-            error!("{}", error.display_chain());
-        }
-    });
+    thread::spawn(
+        move || match create_event_loop(request_rx, state_change_listener) {
+            Ok((mut reactor, event_loop)) => {
+                let startup_result = Ok(());
 
-    request_tx
+                match startup_tx.send(startup_result) {
+                    Ok(()) => {
+                        let event_loop_result = reactor.run(event_loop);
+
+                        if let Err(error) = event_loop_result {
+                            let chained_error = Error::with_chain(
+                                error,
+                                "Tunnel state machine finished with an error",
+                            );
+                            error!("{}", chained_error.display_chain());
+                        }
+                    }
+                    Err(_) => warn!(
+                        "Tunnel state machine won't be started because the owner thread stopped"
+                    ),
+                }
+            }
+            Err(startup_error) => {
+                let startup_result = Err(startup_error);
+                if let Err(sync_mpsc::SendError(unsent_result)) = startup_tx.send(startup_result) {
+                    let chained_error = unsent_result
+                        .unwrap_err()
+                        .chain_err(|| "Failed to send startup error");
+                    error!("{}", chained_error.display_chain());
+                }
+            }
+        },
+    );
+
+    match startup_rx.recv() {
+        Ok(Ok(())) => Ok(request_tx),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(Error::from(ErrorKind::UnknownStartUpError)),
+    }
 }
 
-fn event_loop<T>(
+fn create_event_loop<T>(
     requests: mpsc::UnboundedReceiver<TunnelRequest>,
     state_change_listener: IntoSender<TunnelStateInfo, T>,
-) -> Result<()>
+) -> Result<(Core, impl Future<Item = (), Error = Error>)>
 where
     T: From<TunnelStateInfo> + Send + 'static,
 {
-    let mut reactor =
-        Core::new().chain_err(|| "Failed to initialize tunnel state machine event loop")?;
-
+    let reactor = Core::new().chain_err(|| ErrorKind::ReactorError)?;
     let state_machine = TunnelStateMachine::new(requests);
 
-    reactor
-        .run(state_machine.for_each(|state_change_event| {
-            state_change_listener
-                .send(state_change_event)
-                .chain_err(|| "Failed to send state change event to listener")
-        }))
-        .chain_err(|| "Tunnel state machine finished with an error")
+    let future = state_machine.for_each(move |state_change_event| {
+        state_change_listener
+            .send(state_change_event)
+            .chain_err(|| "Failed to send state change event to listener")
+    });
+
+    Ok((reactor, future))
 }
 
 /// Representation of external requests for the tunnel state machine.
