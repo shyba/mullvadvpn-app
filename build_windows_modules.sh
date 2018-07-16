@@ -16,11 +16,8 @@ fi
 function clean_solution
 {
   local path="$1"
-  
-  if [[ -z "${DEV_BUILD+x}" ]]; then
     # Clean all intermediate and output files
-    rm -r $path/bin/* || true
-  fi
+  rm -r $path/bin/* || true
 }
 
 function build_solution_config
@@ -40,7 +37,9 @@ function build_solution
   local path="$1"
   local sln="$1/$2"
 
-  clean_solution $path
+  if [[ -z "${DEV_BUILD+x}" ]]; then
+    clean_solution $path
+  fi
 
   for mode in $CPP_BUILD_MODES; do
     for target in $CPP_BUILD_TARGETS; do
