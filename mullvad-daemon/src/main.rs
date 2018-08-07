@@ -36,7 +36,7 @@ extern crate mullvad_paths;
 extern crate mullvad_rpc;
 extern crate mullvad_types;
 extern crate talpid_core;
-extern crate talpid_ipc;
+extern crate talpid_ipc_ws;
 extern crate talpid_types;
 
 #[cfg(windows)]
@@ -143,7 +143,7 @@ pub enum DaemonEvent {
     /// An event coming from the JSONRPC-2.0 management interface.
     ManagementInterfaceEvent(TunnelCommand),
     /// Triggered if the server hosting the JSONRPC-2.0 management interface dies unexpectedly.
-    ManagementInterfaceExited(talpid_ipc::Result<()>),
+    ManagementInterfaceExited(talpid_ipc_ws::Result<()>),
     /// Daemon shutdown triggered by a signal, ctrl-c or similar.
     TriggerShutdown,
 }
@@ -589,7 +589,7 @@ impl Daemon {
         }
     }
 
-    fn handle_management_interface_exited(&self, result: talpid_ipc::Result<()>) -> Result<()> {
+    fn handle_management_interface_exited(&self, result: talpid_ipc_ws::Result<()>) -> Result<()> {
         let error = ErrorKind::ManagementInterfaceError("Server exited unexpectedly");
         match result {
             Ok(()) => Err(error.into()),

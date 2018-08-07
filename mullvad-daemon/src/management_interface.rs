@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use talpid_core::mpsc::IntoSender;
-use talpid_ipc;
+use talpid_ipc_ws;
 use talpid_types::net::TunnelOptions;
 use uuid;
 
@@ -212,7 +212,7 @@ struct ActiveSubscriptions {
 }
 
 pub struct ManagementInterfaceServer {
-    server: talpid_ipc::IpcServer,
+    server: talpid_ipc_ws::IpcServer,
     subscriptions: Arc<ActiveSubscriptions>,
 }
 
@@ -221,7 +221,7 @@ impl ManagementInterfaceServer {
         tunnel_tx: IntoSender<TunnelCommand, T>,
         shared_secret: String,
         cache_dir: PathBuf,
-    ) -> talpid_ipc::Result<Self>
+    ) -> talpid_ipc_ws::Result<Self>
     where
         T: From<TunnelCommand> + 'static + Send,
     {
@@ -231,7 +231,7 @@ impl ManagementInterfaceServer {
         let mut io = PubSubHandler::default();
         io.extend_with(rpc.to_delegate());
         let meta_io: MetaIoHandler<Meta> = io.into();
-        let server = talpid_ipc::IpcServer::start_with_metadata(meta_io, meta_extractor)?;
+        let server = talpid_ipc_ws::IpcServer::start_with_metadata(meta_io, meta_extractor)?;
         Ok(ManagementInterfaceServer {
             server,
             subscriptions,
@@ -250,7 +250,7 @@ impl ManagementInterfaceServer {
 
     /// Consumes the server and waits for it to finish. Returns an error if the server exited
     /// due to an error.
-    pub fn wait(self) -> talpid_ipc::Result<()> {
+    pub fn wait(self) -> talpid_ipc_ws::Result<()> {
         self.server.wait()
     }
 }
