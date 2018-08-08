@@ -20,6 +20,10 @@ extern crate serde_json;
 extern crate jsonrpc_core;
 extern crate jsonrpc_pubsub;
 extern crate jsonrpc_ipc_server;
+#[macro_use]
+extern crate jsonrpc_client_core;
+extern crate jsonrpc_client_ipc;
+extern crate tokio_core;
 extern crate url;
 extern crate ws;
 
@@ -27,7 +31,6 @@ use jsonrpc_core::{MetaIoHandler, Metadata};
 use jsonrpc_ipc_server::{MetaExtractor, NoopExtractor, Server, ServerBuilder};
 
 use std::fmt;
-// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 
 mod client;

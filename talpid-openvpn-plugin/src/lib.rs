@@ -13,12 +13,15 @@ extern crate error_chain;
 extern crate log;
 
 #[macro_use]
+extern crate jsonrpc_client_core;
+#[macro_use]
 extern crate openvpn_plugin;
 extern crate talpid_ipc;
 
 use openvpn_plugin::types::{EventResult, OpenVpnPluginEvent};
 use std::collections::HashMap;
 use std::ffi::CString;
+use error_chain::ChainedError;
 
 mod processing;
 use processing::EventProcessor;
@@ -58,8 +61,7 @@ openvpn_plugin!(
 );
 
 pub struct Arguments {
-    server_id: talpid_ipc::IpcServerId,
-    credentials: String,
+    ipc_socket_path: String,
 }
 
 fn openvpn_open(
@@ -70,8 +72,8 @@ fn openvpn_open(
     debug!("Initializing plugin");
 
     let arguments = parse_args(&args)?;
-    info!("Connecting back to talpid core at {}", arguments.server_id);
-    let processor = EventProcessor::new(&arguments).chain_err(|| ErrorKind::InitHandleFailed)?;
+    info!("Connecting back to talpid core at {}", arguments.ipc_socket_path);
+    let processor = EventProcessor::new(arguments).chain_err(|| ErrorKind::InitHandleFailed)?;
 
     Ok((INTERESTING_EVENTS.to_vec(), processor))
 }
@@ -82,22 +84,18 @@ fn parse_args(args: &[CString]) -> Result<Arguments> {
         .into_iter();
 
     let _plugin_path = args_iter.next();
-    let server_id: talpid_ipc::IpcServerId = args_iter
+    let ipc_socket_path: String = args_iter
         .next()
         .ok_or_else(|| ErrorKind::Msg("No core server id given as first argument".to_owned()))?;
-    let credentials = args_iter
-        .next()
-        .ok_or_else(|| ErrorKind::Msg("No IPC credentials given as second argument".to_owned()))?;
 
     Ok(Arguments {
-        server_id,
-        credentials,
+        ipc_socket_path,
     })
 }
 
 
 fn openvpn_close(_handle: EventProcessor) {
-    debug!("Unloading plugin");
+    info!("Unloading plugin");
 }
 
 fn openvpn_event(
@@ -111,8 +109,14 @@ fn openvpn_event(
     let parsed_env =
         openvpn_plugin::ffi::parse::env_utf8(&env).chain_err(|| ErrorKind::ParseEnvFailed)?;
 
-    handle
+    let result = handle
         .process_event(event, parsed_env)
-        .chain_err(|| ErrorKind::EventProcessingFailed)?;
-    Ok(EventResult::Success)
+        .chain_err(|| ErrorKind::EventProcessingFailed);
+    match result {
+        Ok(()) => Ok(EventResult::Success),
+        Err(e) => {
+            error!("{}", e.display_chain());
+            Ok(EventResult::Failure)
+        }
+    }
 }

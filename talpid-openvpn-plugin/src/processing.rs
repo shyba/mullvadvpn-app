@@ -1,7 +1,8 @@
 use openvpn_plugin;
 use std::collections::HashMap;
+use talpid_ipc;
+use jsonrpc_client_core::Future;
 use std::sync::Mutex;
-use talpid_ipc::WsIpcClient;
 
 use super::Arguments;
 
@@ -19,21 +20,15 @@ error_chain! {
 
 /// Struct processing OpenVPN events and notifies listeners over IPC
 pub struct EventProcessor {
-    ipc_client: Mutex<WsIpcClient>,
+    ipc_client: Mutex<EventProxy>,
 }
 
 impl EventProcessor {
-    pub fn new(arguments: &Arguments) -> Result<EventProcessor> {
+    pub fn new(arguments: Arguments) -> Result<EventProcessor> {
         trace!("Creating EventProcessor");
-        let mut ipc_client = WsIpcClient::connect(&arguments.server_id)
+        let ipc_client_handle = talpid_ipc::connect(arguments.ipc_socket_path)
             .chain_err(|| "Unable to create IPC client")?;
-
-        trace!("Authenticating EventProcessor");
-        match ipc_client.call("authenticate", &[&arguments.credentials]) {
-            Ok(true) => trace!("Credentials accepted"),
-            Ok(false) => bail!(ErrorKind::AuthDenied),
-            Err(error) => bail!(Error::with_chain(error, ErrorKind::AuthDenied)),
-        }
+        let ipc_client = EventProxy::new(ipc_client_handle);
 
         Ok(EventProcessor {
             ipc_client: Mutex::new(ipc_client),
@@ -48,9 +43,13 @@ impl EventProcessor {
         trace!("Processing \"{:?}\" event", event);
         self.ipc_client
             .lock()
-            .expect("a thread panicked while using the RPC client in the OpenVPN plugin")
-            .call("openvpn_event", &(event, env))
-            .map(|_: Option<()>| ())
-            .chain_err(|| ErrorKind::IpcSendingError)
+            .expect("Some thread panicked while locking the ipc_client")
+            .openvpn_event(event, env)
+            .map_err(|e| Error::with_chain(e, ErrorKind::IpcSendingError))
+            .wait()
     }
 }
+
+jsonrpc_client!(pub struct EventProxy {
+    pub fn openvpn_event(&mut self, event: openvpn_plugin::types::OpenVpnPluginEvent, env: HashMap<String, String>) -> Future<()>;
+});

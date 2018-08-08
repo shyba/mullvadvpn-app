@@ -12,11 +12,10 @@ serde_json = "1.0"
 log = "0.4"
 jsonrpc-core = { git = "https://github.com/paritytech/jsonrpc", branch = "master" }
 jsonrpc-pubsub = { git = "https://github.com/paritytech/jsonrpc", branch = "master" }
-# jsonrpc-ws-server = { git = "https://github.com/paritytech/jsonrpc", branch = "master" }
 jsonrpc-ipc-server = { git = "https://github.com/paritytech/jsonrpc", branch = "master" }
-# jsonrpc-core = { path = "../../jsonrpc/core" }
-# jsonrpc-pubsub = { path = "../../jsonrpc/pubsub" }
-# jsonrpc-ipc-server = { path = "../../jsonrpc/ipc" }
+jsonrpc-client-core = { git = "https://github.com/mullvad/jsonrpc-client-rs" }
+jsonrpc-client-ipc = { git = "https://github.com/mullvad/jsonrpc-client-rs" }
+tokio-core = "0.1"
 ws = { git = "https://github.com/tomusdrw/ws-rs" }
 url = "1.4"
 
@@ -24,4 +23,3 @@ url = "1.4"
 assert_matches = "1.0"
 env_logger = "0.5"
 jsonrpc-macros = { git = "https://github.com/paritytech/jsonrpc", branch = "master" }
-# jsonrpc-macros = { path = "../../jsonrpc/macros" }

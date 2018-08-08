@@ -12,9 +12,11 @@ crate-type = ["cdylib"]
 error-chain = "0.12"
 log = "0.4"
 env_logger = "0.5"
+jsonrpc-client-core = { git = "https://github.com/mullvad/jsonrpc-client-rs" }
 
 openvpn-plugin = { version = "0.3", features = ["serde", "log"] }
 talpid-ipc = { path = "../talpid-ipc" }
+
 
 [target.'cfg(windows)'.build-dependencies]
 windres = "0.2"

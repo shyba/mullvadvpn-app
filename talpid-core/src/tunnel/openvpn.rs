@@ -226,7 +226,11 @@ mod event_server {
     where
         L: Fn(OpenVpnPluginEvent, HashMap<String, String>) + Send + Sync + 'static,
     {
-        let ipc_path = "/tmp/openvpn-ipc-point";
+        let ipc_path = if cfg!(windows) {
+            r"\\.\pipe\mullvad-vpn-openvpn"
+        } else {
+            "/tmp/mullvad-vpn-openvpn"
+        };
         let rpc = OpenVpnEventApiImpl { on_event };
         let mut io = IoHandler::new();
         io.extend_with(rpc.to_delegate());
