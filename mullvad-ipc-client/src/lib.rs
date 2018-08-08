@@ -3,7 +3,7 @@ extern crate error_chain;
 extern crate mullvad_paths;
 extern crate mullvad_types;
 extern crate serde;
-extern crate talpid_ipc;
+extern crate talpid_ipc_ws;
 extern crate talpid_types;
 
 use std::fs::File;
@@ -18,7 +18,7 @@ use mullvad_types::relay_list::RelayList;
 use mullvad_types::states::DaemonState;
 use mullvad_types::version::AppVersionInfo;
 use serde::{Deserialize, Serialize};
-use talpid_ipc::WsIpcClient;
+use talpid_ipc_ws::WsIpcClient;
 use talpid_types::net::TunnelOptions;
 
 use platform_specific::ensure_written_by_admin;
