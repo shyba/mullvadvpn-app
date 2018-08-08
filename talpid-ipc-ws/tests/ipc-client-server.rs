@@ -4,7 +4,7 @@ extern crate env_logger;
 extern crate jsonrpc_core;
 #[macro_use]
 extern crate jsonrpc_macros;
-extern crate talpid_ipc;
+extern crate talpid_ipc_ws;
 
 use jsonrpc_core::{Error, IoHandler};
 use std::sync::{mpsc, Mutex};
@@ -61,16 +61,16 @@ fn ipc_client_bad_connection() {
     assert_matches!(result, Err(_));
 }
 
-fn create_server() -> (talpid_ipc::IpcServer, mpsc::Receiver<i64>) {
+fn create_server() -> (talpid_ipc_ws::IpcServer, mpsc::Receiver<i64>) {
     let (tx, rx) = mpsc::channel();
     let rpc = ApiImpl { tx: Mutex::new(tx) };
     let mut io = IoHandler::new();
     io.extend_with(rpc.to_delegate());
 
-    let server = talpid_ipc::IpcServer::start(io.into()).unwrap();
+    let server = talpid_ipc_ws::IpcServer::start(io.into()).unwrap();
     (server, rx)
 }
 
-fn create_client(id: &talpid_ipc::IpcServerId) -> talpid_ipc::WsIpcClient {
-    talpid_ipc::WsIpcClient::connect(id).unwrap()
+fn create_client(id: &talpid_ipc_ws::IpcServerId) -> talpid_ipc_ws::WsIpcClient {
+    talpid_ipc_ws::WsIpcClient::connect(id).unwrap()
 }
