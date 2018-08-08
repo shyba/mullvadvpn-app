@@ -6,7 +6,7 @@ extern crate mullvad_ipc_client;
 extern crate mullvad_paths;
 extern crate notify;
 extern crate openvpn_plugin;
-extern crate talpid_ipc;
+extern crate talpid_ipc_ws as talpid_ipc;
 extern crate tempfile;
 
 pub mod mock_openvpn;

@@ -15,7 +15,7 @@ mullvad-paths = { path = "../mullvad-paths" }
 mullvad-types = { path = "../mullvad-types" }
 notify = "4.0"
 openvpn-plugin = { version = "0.3", features = ["serde"] }
-talpid-ipc = { path = "../talpid-ipc" }
+talpid-ipc-ws = { path = "../talpid-ipc-ws" }
 tempfile = "3.0"
 
 [target.'cfg(unix)'.dependencies]
