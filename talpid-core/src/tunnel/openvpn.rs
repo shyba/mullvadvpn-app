@@ -12,7 +12,6 @@ use std::thread;
 use std::time::Duration;
 
 use talpid_ipc;
-use uuid;
 
 mod errors {
     error_chain!{
@@ -220,16 +219,18 @@ mod event_server {
     use jsonrpc_core::{Error, IoHandler, MetaIoHandler};
     use std::collections::HashMap;
     use talpid_ipc;
+    use uuid;
 
     /// Construct and start the IPC server with the given event listener callback.
     pub fn start<L>(on_event: L) -> talpid_ipc::Result<talpid_ipc::IpcServer>
     where
         L: Fn(OpenVpnPluginEvent, HashMap<String, String>) + Send + Sync + 'static,
     {
+        let uuid = uuid::Uuid::new_v4().to_string();
         let ipc_path = if cfg!(windows) {
-            r"\\.\pipe\mullvad-vpn-openvpn"
+            format!(r"\\.\pipe\mullvad-vpn-openvpn-{}", uuid)
         } else {
-            "/tmp/mullvad-vpn-openvpn"
+            format!("/tmp/mullvad-vpn-openvpn-{}", uuid)
         };
         let rpc = OpenVpnEventApiImpl { on_event };
         let mut io = IoHandler::new();

@@ -54,18 +54,18 @@ pub struct IpcServer {
 }
 
 impl IpcServer {
-    pub fn start<M: Metadata + Default>(handler: MetaIoHandler<M>, path: &str) -> Result<Self> {
+    pub fn start<M: Metadata + Default>(handler: MetaIoHandler<M>, path: String) -> Result<Self> {
         Self::start_with_metadata(handler, NoopExtractor, path)
     }
 
-    pub fn start_with_metadata<M, E>(handler: MetaIoHandler<M>, meta_extractor: E, path: &str) -> Result<Self>
+    pub fn start_with_metadata<M, E>(handler: MetaIoHandler<M>, meta_extractor: E, path: String) -> Result<Self>
     where
         M: Metadata + Default,
         E: MetaExtractor<M>,
     {
         ServerBuilder::new(handler)
             .session_meta_extractor(meta_extractor)
-            .start(path)
+            .start(&path)
             .map(|server| IpcServer {
                 path: path.to_owned(),
                 server: server,
@@ -82,7 +82,7 @@ impl IpcServer {
         CloseHandle(self.server.close_handle())
     }
 
-    /// Consumes the server and waits for it to finish. Get an `CloseHandle` before calling this
+    /// Consumes the server and waits for it to finish. Get a `CloseHandle` before calling this
     /// if you want to be able to shut the server down.
     pub fn wait(self) {
         self.server.wait()

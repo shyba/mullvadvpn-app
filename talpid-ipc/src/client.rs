@@ -9,6 +9,9 @@ error_chain! {
     errors {
         CoreError { description("Error when creating event loop") }
     }
+    links {
+        IpcError(jsonrpc_client_core::Error, jsonrpc_client_core::ErrorKind);
+    }
 }
 
 pub fn connect(path: String) -> Result<jsonrpc_client_core::ClientHandle> {
@@ -43,11 +46,16 @@ where
     rx.recv().unwrap()
 }
 
-fn create_core<F, T>(init: F) -> Result<(Core, T)>
+fn create_core<F, T>(path: String) -> Result<(Core, T)>
 where
     F: FnOnce(&mut Core) -> T + Send + 'static,
 {
     let mut core = Core::new().chain_err(|| ErrorKind::CoreError)?;
-    let out = init(&mut core);
+    let handle = core.handle();
+    let (client, client_handle) = jsonrpc_client_ipc::IpcTransport::new(&path, &handle)?.into_client();
+    handle.spawn(client.map_err(|e| {
+        error!("{}", e.display_chain());
+    }));
+    client_handle
     Ok((core, out))
 }

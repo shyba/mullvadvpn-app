@@ -2,9 +2,11 @@
 extern crate assert_matches;
 extern crate env_logger;
 extern crate jsonrpc_core;
+extern crate jsonrpc_client_core;
 #[macro_use]
 extern crate jsonrpc_macros;
 extern crate talpid_ipc;
+extern crate uuid;
 
 use jsonrpc_core::{Error, IoHandler};
 use std::sync::{mpsc, Mutex};
@@ -35,8 +37,8 @@ fn can_call_rpcs_on_server() {
     env_logger::init();
 
     let (server, rx) = create_server();
-    let server_id = server.address().to_owned();
-    let mut client = create_client(&server_id);
+    let server_path = server.path().to_owned();
+    let mut client = create_client(&server_path);
 
     let _result: () = client.call("foo", &[97]).unwrap();
     assert_eq!(Ok(97), rx.recv_timeout(Duration::from_millis(500)));
@@ -67,10 +69,16 @@ fn create_server() -> (talpid_ipc::IpcServer, mpsc::Receiver<i64>) {
     let mut io = IoHandler::new();
     io.extend_with(rpc.to_delegate());
 
-    let server = talpid_ipc::IpcServer::start(io.into()).unwrap();
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let ipc_path = if cfg!(windows) {
+        format!(r"\\.\pipe\ipc-test-{}", uuid)
+    } else {
+        format!("/tmp/ipc-test-{}", uuid)
+    };
+    let server = talpid_ipc::IpcServer::start(io.into(), ipc_path).unwrap();
     (server, rx)
 }
 
-fn create_client(id: &talpid_ipc::IpcServerId) -> talpid_ipc::WsIpcClient {
-    talpid_ipc::WsIpcClient::connect(id).unwrap()
+fn create_client(ipc_path: String) -> jsonrpc_client_core::ClientHandle {
+    talpid_ipc::connect(ipc_path).unwrap()
 }
