@@ -1768,6 +1768,7 @@ version = "0.1.0"
 dependencies = [
  "env_logger 0.5.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "error-chain 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures 0.1.23 (registry+https://github.com/rust-lang/crates.io-index)",
  "jsonrpc-client-core 0.5.0 (git+https://github.com/mullvad/jsonrpc-client-rs)",
  "jsonrpc-client-ipc 0.5.0 (git+https://github.com/mullvad/jsonrpc-client-rs)",
  "log 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",

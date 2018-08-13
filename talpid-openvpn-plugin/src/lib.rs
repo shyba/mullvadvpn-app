@@ -6,8 +6,6 @@
 //! GNU General Public License as published by the Free Software Foundation, either version 3 of
 //! the License, or (at your option) any later version.
 
-#![recursion_limit="128"]
-
 extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
@@ -16,15 +14,19 @@ extern crate log;
 
 #[macro_use]
 extern crate jsonrpc_client_core;
+extern crate futures;
 extern crate jsonrpc_client_ipc;
 #[macro_use]
 extern crate openvpn_plugin;
 extern crate tokio_core;
 
+use error_chain::ChainedError;
+use openvpn_plugin::ffi;
 use openvpn_plugin::types::{EventResult, OpenVpnPluginEvent};
 use std::collections::HashMap;
 use std::ffi::CString;
-use error_chain::ChainedError;
+use std::sync::Mutex;
+
 
 mod processing;
 use processing::EventProcessor;
@@ -60,7 +62,7 @@ openvpn_plugin!(
     ::openvpn_open,
     ::openvpn_close,
     ::openvpn_event,
-    ::EventProcessor
+    ::Mutex<EventProcessor>
 );
 
 pub struct Arguments {
@@ -70,15 +72,18 @@ pub struct Arguments {
 fn openvpn_open(
     args: Vec<CString>,
     _env: HashMap<CString, CString>,
-) -> Result<(Vec<OpenVpnPluginEvent>, EventProcessor)> {
+) -> Result<(Vec<OpenVpnPluginEvent>, Mutex<EventProcessor>)> {
     env_logger::init();
     debug!("Initializing plugin");
 
     let arguments = parse_args(&args)?;
-    info!("Connecting back to talpid core at {}", arguments.ipc_socket_path);
+    info!(
+        "Connecting back to talpid core at {}",
+        arguments.ipc_socket_path
+    );
     let processor = EventProcessor::new(arguments).chain_err(|| ErrorKind::InitHandleFailed)?;
 
-    Ok((INTERESTING_EVENTS.to_vec(), processor))
+    Ok((INTERESTING_EVENTS.to_vec(), Mutex::new(processor)))
 }
 
 fn parse_args(args: &[CString]) -> Result<Arguments> {
@@ -91,13 +96,11 @@ fn parse_args(args: &[CString]) -> Result<Arguments> {
         .next()
         .ok_or_else(|| ErrorKind::Msg("No core server id given as first argument".to_owned()))?;
 
-    Ok(Arguments {
-        ipc_socket_path,
-    })
+    Ok(Arguments { ipc_socket_path })
 }
 
 
-fn openvpn_close(_handle: EventProcessor) {
+fn openvpn_close(_handle: Mutex<EventProcessor>) {
     info!("Unloading plugin");
 }
 
@@ -105,7 +108,7 @@ fn openvpn_event(
     event: OpenVpnPluginEvent,
     _args: Vec<CString>,
     env: HashMap<CString, CString>,
-    handle: &mut EventProcessor,
+    handle: &mut Mutex<EventProcessor>,
 ) -> Result<EventResult> {
     debug!("Received event: {:?}", event);
 
@@ -113,6 +116,8 @@ fn openvpn_event(
         openvpn_plugin::ffi::parse::env_utf8(&env).chain_err(|| ErrorKind::ParseEnvFailed)?;
 
     let result = handle
+        .lock()
+        .expect("failed to obtain mutex for EventProcessor")
         .process_event(event, parsed_env)
         .chain_err(|| ErrorKind::EventProcessingFailed);
     match result {

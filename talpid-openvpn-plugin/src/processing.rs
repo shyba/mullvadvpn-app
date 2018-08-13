@@ -1,9 +1,10 @@
 use openvpn_plugin;
 use std::collections::HashMap;
 
-use jsonrpc_client_core::{Client, Future};
+extern crate futures;
+
+use jsonrpc_client_core::{Future, Result as ClientResult};
 use jsonrpc_client_ipc::IpcTransport;
-use std::sync::Mutex;
 use tokio_core::reactor::Core;
 
 use super::Arguments;
@@ -13,28 +14,42 @@ error_chain! {
         IpcSendingError {
             description("Failed while sending an event over the IPC channel")
         }
+
+        Shutdown {
+            description("Connection is shut down")
+        }
+
     }
 }
 
 
 /// Struct processing OpenVPN events and notifies listeners over IPC
 pub struct EventProcessor {
-    ipc_client: Mutex<EventProxy>,
-    client: Option<Client>,
+    ipc_client: EventProxy,
+    client_stop: ::std::sync::mpsc::Receiver<ClientResult<()>>,
     core: Core,
 }
 
 impl EventProcessor {
     pub fn new(arguments: Arguments) -> Result<EventProcessor> {
         trace!("Creating EventProcessor");
-        let mut core = Core::new().chain_err(|| "Unable to initialize Tokio Core")?;
+        let core = Core::new().chain_err(|| "Unable to initialize Tokio Core")?;
         let handle = core.handle();
-        let (client, client_handle) = IpcTransport::new(&arguments.ipc_socket_path, &handle).chain_err(|| "Unable to create IPC transport")?.into_client();
+        let (client, client_handle) = IpcTransport::new(&arguments.ipc_socket_path, &handle)
+            .chain_err(|| "Unable to create IPC transport")?
+            .into_client();
+
+        let (tx, client_stop) = ::std::sync::mpsc::channel();
+
+        let client_future = client.then(move |result| tx.send(result)).map_err(|_| ());
+        handle.spawn(client_future);
+
         let ipc_client = EventProxy::new(client_handle);
 
+        error!("STARTING PLUGIN");
         Ok(EventProcessor {
-            ipc_client: Mutex::new(ipc_client),
-            client,
+            ipc_client,
+            client_stop,
             core,
         })
     }
@@ -45,14 +60,22 @@ impl EventProcessor {
         env: HashMap<String, String>,
     ) -> Result<()> {
         trace!("Processing \"{:?}\" event", event);
-        let call_future = self.ipc_client
-            .lock()
-            .expect("Some thread panicked while locking the ipc_client")
+        let call_future = self
+            .ipc_client
             .openvpn_event(event, env)
             .map_err(|e| Error::with_chain(e, ErrorKind::IpcSendingError));
-        // Create combined future of `call_future` and `self.client` and run that on `self.core`
-        // until completion...
-        self.core.run(self.client...)
+        self.core.run(call_future)?;
+        self.check_client_status()
+    }
+
+    fn check_client_status(&mut self) -> Result<()> {
+        use std::sync::mpsc::TryRecvError::*;
+        match self.client_stop.try_recv() {
+            Err(Empty) => Ok(()),
+            Err(Disconnected) => Err(ErrorKind::Shutdown.into()),
+            Ok(Ok(_)) => Err(ErrorKind::Shutdown.into()),
+            Ok(Err(e)) => Err(Error::with_chain(e, ErrorKind::IpcSendingError)),
+        }
     }
 }
 
