@@ -18,8 +18,8 @@ extern crate serde;
 extern crate serde_json;
 
 extern crate jsonrpc_core;
-extern crate jsonrpc_pubsub;
 extern crate jsonrpc_ipc_server;
+extern crate jsonrpc_pubsub;
 #[macro_use]
 extern crate jsonrpc_client_core;
 extern crate jsonrpc_client_ipc;
@@ -32,9 +32,6 @@ use jsonrpc_ipc_server::{MetaExtractor, NoopExtractor, Server, ServerBuilder};
 
 use std::fmt;
 
-
-mod client;
-pub use client::*;
 
 /// An Id created by the Ipc server that the client can use to connect to it
 pub type IpcServerId = String;
@@ -58,7 +55,11 @@ impl IpcServer {
         Self::start_with_metadata(handler, NoopExtractor, path)
     }
 
-    pub fn start_with_metadata<M, E>(handler: MetaIoHandler<M>, meta_extractor: E, path: String) -> Result<Self>
+    pub fn start_with_metadata<M, E>(
+        handler: MetaIoHandler<M>,
+        meta_extractor: E,
+        path: String,
+    ) -> Result<Self>
     where
         M: Metadata + Default,
         E: MetaExtractor<M>,
