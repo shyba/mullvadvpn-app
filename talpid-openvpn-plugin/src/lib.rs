@@ -6,6 +6,8 @@
 //! GNU General Public License as published by the Free Software Foundation, either version 3 of
 //! the License, or (at your option) any later version.
 
+#![recursion_limit="128"]
+
 extern crate env_logger;
 #[macro_use]
 extern crate error_chain;
@@ -14,9 +16,10 @@ extern crate log;
 
 #[macro_use]
 extern crate jsonrpc_client_core;
+extern crate jsonrpc_client_ipc;
 #[macro_use]
 extern crate openvpn_plugin;
-extern crate talpid_ipc;
+extern crate tokio_core;
 
 use openvpn_plugin::types::{EventResult, OpenVpnPluginEvent};
 use std::collections::HashMap;

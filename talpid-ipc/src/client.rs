@@ -14,6 +14,14 @@ error_chain! {
     }
 }
 
+
+/// <WARNING>
+/// This super generic useless code is ont to be used.
+/// It just spawns the client off-thread with no way to handle `Client` errors.
+/// Our users of this will work in a sync fashion anyway. Make them create
+/// their own cores and drive them on their own.
+/// </WARNING>
+
 pub fn connect(path: String) -> Result<jsonrpc_client_core::ClientHandle> {
         create(move |core| {
             let handle = core.handle();
